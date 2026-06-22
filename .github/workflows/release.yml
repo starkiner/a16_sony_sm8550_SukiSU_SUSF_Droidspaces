@@ -26,6 +26,21 @@ on:
         required: true
         default: true
         type: boolean
+      droidspaces:
+        description: 'Droidspaces container support (experimental)'
+        required: true
+        default: '678'
+        type: choice
+        options:
+          - off
+          - 678
+          - 123
+          - 345
+      droidspaces_ntsync:
+        description: 'Enable Droidspaces NTSync support (requires Droidspaces)'
+        required: true
+        default: false
+        type: boolean
       release_version:
         description: 'Release Version'
         required: true
@@ -51,7 +66,7 @@ jobs:
       BUILD_SLUG: ${{ github.event.inputs.ksu_variant == 'ReSukiSU' && 'resukisu' || 'sukisu' }}
     strategy:
       matrix:
-        device: [pdx234, pdx237]
+        device: [pdx234]
       fail-fast: false
     steps:
       - name: Maximize Build Space
@@ -246,6 +261,12 @@ jobs:
           fi
           echo "" >> ../error-log-${{ matrix.device }}.txt
 
+      - name: Clone Droidspaces patch repository
+        if: ${{ github.event.inputs.droidspaces != 'off' }}
+        run: |
+          git clone --depth=1 https://github.com/ravindu644/Droidspaces-OSS.git /tmp/Droidspaces-OSS
+          echo "DROIDSPACES_PATCHES=/tmp/Droidspaces-OSS/Documentation/resources/kernel-patches/GKI" >> $GITHUB_ENV
+
       - name: Add KernelSU variant
         working-directory: kernel
         run: |
@@ -348,6 +369,144 @@ jobs:
             echo "⚠ Main SUSFS patch had issues (continuing)" | tee -a ../error-log-${{ matrix.device }}.txt
           fi
           echo "" >> ../error-log-${{ matrix.device }}.txt
+
+      - name: Integrate Droidspaces support
+        if: ${{ github.event.inputs.droidspaces != 'off' }}
+        working-directory: kernel
+        run: |
+          LOG="../error-log-${{ matrix.device }}.txt"
+          KERNEL_VER="${{ env.KERNEL_VERSION }}"
+          SLOT="${{ github.event.inputs.droidspaces }}"
+
+          # 678 -> 6_7_8, 123 -> 1_2_3, 345 -> 3_4_5
+          SLOT_NAME=$(echo "$SLOT" | sed 's/\(.\)/\1_/g; s/_$//')
+          echo "--- Droidspaces Integration ---" | tee -a "$LOG"
+          echo "Using Droidspaces slot patch: $SLOT / $SLOT_NAME" | tee -a "$LOG"
+
+          case "$KERNEL_VER" in
+            6.12)
+              PATCH_FILE="$DROIDSPACES_PATCHES/kernel-6.12/001.GKI-6.12-or-above-fix_sysvipc_kabi.patch"
+              ;;
+            5.10|5.15|6.1|6.6)
+              PATCH_FILE="$DROIDSPACES_PATCHES/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_${SLOT_NAME}.patch"
+              ;;
+            *)
+              echo "⚠ Droidspaces: unsupported kernel version $KERNEL_VER; skipping patch" | tee -a "$LOG"
+              exit 0
+              ;;
+          esac
+
+          if [ ! -f "$PATCH_FILE" ]; then
+            echo "✗ ERROR: Droidspaces patch not found: $PATCH_FILE" | tee -a "$LOG"
+            exit 1
+          fi
+
+          if patch -p1 --forward < "$PATCH_FILE" 2>&1 | tee -a "$LOG"; then
+            echo "✓ Droidspaces SYSVIPC kABI patch applied" | tee -a "$LOG"
+          else
+            echo "⚠ Droidspaces SYSVIPC kABI patch failed or was already applied (continuing)" | tee -a "$LOG"
+          fi
+
+          if [ "$KERNEL_VER" = "5.10" ]; then
+            POSIX_PATCH="$DROIDSPACES_PATCHES/below-kernel-6.12/002.5.10_or_lower_use_android_abi_padding_for_posix_mqueue.patch"
+            if patch -p1 --forward < "$POSIX_PATCH" 2>&1 | tee -a "$LOG"; then
+              echo "✓ Droidspaces POSIX_MQUEUE kABI patch applied" | tee -a "$LOG"
+            else
+              echo "⚠ Droidspaces POSIX_MQUEUE kABI patch failed or was already applied (continuing)" | tee -a "$LOG"
+            fi
+          fi
+
+          DEFCONFIG="arch/arm64/configs/${{ matrix.device }}_defconfig"
+          enable_config() {
+            local cfg="$1"
+            if grep -q "^${cfg}=y" "$DEFCONFIG"; then
+              echo "  already enabled: $cfg" | tee -a "$LOG"
+            elif grep -q "^# ${cfg} is not set" "$DEFCONFIG"; then
+              sed -i "s/^# ${cfg} is not set$/${cfg}=y/" "$DEFCONFIG"
+              echo "  enabled: $cfg" | tee -a "$LOG"
+            else
+              echo "${cfg}=y" >> "$DEFCONFIG"
+              echo "  added: $cfg" | tee -a "$LOG"
+            fi
+          }
+
+          config_defined() {
+            local name="${1#CONFIG_}"
+            grep -RqsE --include='Kconfig*' "^[[:space:]]*(menuconfig|config)[[:space:]]+${name}$" .
+          }
+
+          enable_config_if_defined() {
+            local cfg="$1"
+            if config_defined "$cfg"; then
+              enable_config "$cfg"
+            else
+              echo "  not defined by this kernel, skipped: $cfg" | tee -a "$LOG"
+            fi
+          }
+
+          echo "Adding Droidspaces kernel configuration..." | tee -a "$LOG"
+          enable_config CONFIG_SYSVIPC
+          enable_config CONFIG_POSIX_MQUEUE
+          enable_config CONFIG_IPC_NS
+          enable_config CONFIG_PID_NS
+          enable_config CONFIG_DEVTMPFS
+
+          # Optional networking support used by Droidspaces container networking/NAT modes.
+          enable_config_if_defined CONFIG_NETFILTER_XT_MATCH_ADDRTYPE
+          enable_config_if_defined CONFIG_NETFILTER_XT_TARGET_LOG
+          enable_config_if_defined CONFIG_NETFILTER_XT_MATCH_RECENT
+          enable_config_if_defined CONFIG_IP_SET
+          enable_config_if_defined CONFIG_IP_SET_HASH_IP
+          enable_config_if_defined CONFIG_IP_SET_HASH_NET
+          enable_config_if_defined CONFIG_NETFILTER_XT_SET
+          enable_config_if_defined CONFIG_NETFILTER_XT_TARGET_REJECT
+          enable_config_if_defined CONFIG_IP_NF_TARGET_REJECT
+
+          echo "✓ Droidspaces integration completed" | tee -a "$LOG"
+          echo "" >> "$LOG"
+
+      - name: Inject Droidspaces NTSync support
+        if: ${{ github.event.inputs.droidspaces != 'off' && github.event.inputs.droidspaces_ntsync == 'true' }}
+        working-directory: kernel
+        run: |
+          LOG="../error-log-${{ matrix.device }}.txt"
+          echo "--- Droidspaces NTSync Integration ---" | tee -a "$LOG"
+
+          case "${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}" in
+            android12-5.10)
+              NTSYNC_PATCH="ntsync_compat_android12-5.10"
+              ;;
+            android13-5.15)
+              NTSYNC_PATCH="ntsync_compat_android13-5.15"
+              ;;
+            android14-6.1)
+              NTSYNC_PATCH="ntsync_compat_android14-6.1"
+              ;;
+            android15-6.6)
+              NTSYNC_PATCH="ntsync_compat_android15-6.6"
+              ;;
+            android16-6.12)
+              NTSYNC_PATCH="ntsync_compat_android16-6.12"
+              ;;
+            *)
+              echo "⚠ NTSync: unsupported ${{ env.ANDROID_VERSION }} / ${{ env.KERNEL_VERSION }}; skipping" | tee -a "$LOG"
+              exit 0
+              ;;
+          esac
+
+          wget -q "https://raw.githubusercontent.com/Goldzxcbug/Droidspaces_Kernel_patch/refs/heads/main/NTsync/ntsync_base.patch"
+          wget -q "https://raw.githubusercontent.com/Goldzxcbug/Droidspaces_Kernel_patch/refs/heads/main/NTsync/${NTSYNC_PATCH}.patch"
+
+          patch -p1 --forward < "ntsync_base.patch" 2>&1 | tee -a "$LOG"
+          patch -p1 --forward < "${NTSYNC_PATCH}.patch" 2>&1 | tee -a "$LOG"
+
+          DEFCONFIG="arch/arm64/configs/${{ matrix.device }}_defconfig"
+          sed -i '/CONFIG_NTSYNC is not set/d' "$DEFCONFIG"
+          if ! grep -q '^CONFIG_NTSYNC=y' "$DEFCONFIG"; then
+            echo 'CONFIG_NTSYNC=y' >> "$DEFCONFIG"
+          fi
+          echo "✓ Droidspaces NTSync integration completed" | tee -a "$LOG"
+          echo "" >> "$LOG"
 
       - name: Apply task_mmu.c fix for android13-5.15
         working-directory: kernel
@@ -590,6 +749,8 @@ jobs:
           echo "SUSFS Enabled: ${{ github.event.inputs.enable_susfs }}" | tee -a build-info-${{ matrix.device }}.txt
           echo "KPM Enabled: ${{ github.event.inputs.enable_kpm }}" | tee -a build-info-${{ matrix.device }}.txt
           echo "ZRAM/LZ4KD Enabled: ${{ github.event.inputs.enable_zram }}" | tee -a build-info-${{ matrix.device }}.txt
+          echo "Droidspaces: ${{ github.event.inputs.droidspaces }}" | tee -a build-info-${{ matrix.device }}.txt
+          echo "Droidspaces NTSync: ${{ github.event.inputs.droidspaces_ntsync }}" | tee -a build-info-${{ matrix.device }}.txt
           echo "Release Version: ${{ github.event.inputs.release_version }}" | tee -a build-info-${{ matrix.device }}.txt
           echo "Build Date: $(date -u)" | tee -a build-info-${{ matrix.device }}.txt
           echo "Kernel Version: ${{ env.KERNEL_VERSION }}" | tee -a build-info-${{ matrix.device }}.txt
@@ -678,12 +839,6 @@ jobs:
           name: kernel-pdx234-${{ env.BUILD_SLUG }}
           path: artifacts/pdx234
 
-      - name: Download build artifacts for pdx237
-        uses: actions/download-artifact@v4
-        with:
-          name: kernel-pdx237-${{ env.BUILD_SLUG }}
-          path: artifacts/pdx237
-
       - name: Prepare release assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -693,10 +848,6 @@ jobs:
           cp artifacts/pdx234/Image-pdx234 release-assets/Image-pdx234
           cp artifacts/pdx234/build-info-pdx234.txt release-assets/build-info-pdx234.txt
           cp artifacts/pdx234/AnyKernel3-pdx234-*.zip release-assets/
-
-          cp artifacts/pdx237/Image-pdx237 release-assets/Image-pdx237
-          cp artifacts/pdx237/build-info-pdx237.txt release-assets/build-info-pdx237.txt
-          cp artifacts/pdx237/AnyKernel3-pdx237-*.zip release-assets/
 
           if [ "${{ github.event.inputs.ksu_variant }}" == "ReSukiSU" ]; then
             MGR_REPO="ReSukiSU/ReSukiSU"
@@ -732,7 +883,7 @@ jobs:
       - name: Generate release tag and notes
         id: release_info
         run: |
-          TAG="multi-device-${{ github.event.inputs.release_version }}"
+          TAG="pdx234-${{ github.ref_name }}-${{ github.event.inputs.release_version }}"
           echo "RELEASE_TAG=$TAG" >> $GITHUB_ENV
 
           SUSFS_VERSION="v2.1.0"
@@ -752,17 +903,25 @@ jobs:
             MANAGER_REPO="https://github.com/SukiSU-Ultra/SukiSU-Ultra"
           fi
 
-          RELEASE_NAME="pdx234 & pdx237 Kernel: ${VARIANT} & SUSFS ${SUSFS_VERSION}"
+          DROIDSPACES_FEATURE="disabled"
+          if [ "${{ github.event.inputs.droidspaces }}" != "off" ]; then
+            DROIDSPACES_FEATURE="enabled (slot ${{ github.event.inputs.droidspaces }}"
+            if [ "${{ github.event.inputs.droidspaces_ntsync }}" == "true" ]; then
+              DROIDSPACES_FEATURE="${DROIDSPACES_FEATURE}, NTSync"
+            fi
+            DROIDSPACES_FEATURE="${DROIDSPACES_FEATURE})"
+          fi
+
+          RELEASE_NAME="pdx234 Kernel: ${VARIANT} & SUSFS ${SUSFS_VERSION}"
           echo "RELEASE_NAME<<EOF" >> $GITHUB_ENV
           echo "$RELEASE_NAME" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
 
           cat > release-notes.md << EOF
-          This release includes **${VARIANT}** for Sony Xperia devices on LineageOS 23.2 / crDroid 12.7
+          This release includes **${VARIANT}** for Sony Xperia devices on LineageOS 23.2 / crDroid 12.11
 
           ## Supported Devices:
           - **pdx234** - Sony Xperia 1 V
-          - **pdx237** - Sony Xperia 5 V
 
           Features:
           -> ${VARIANT_FEATURE}
@@ -773,6 +932,7 @@ jobs:
           -> KPM ${{ github.event.inputs.enable_kpm == 'true' && 'Support' || 'not supported' }}
           -> LZ4KD ${{ github.event.inputs.enable_zram == 'true' && 'supported' || 'not supported' }}
           -> LZ4 1.10.0 ${{ github.event.inputs.enable_zram == 'true' && 'supported' || 'not supported' }}
+          -> Droidspaces container support: ${DROIDSPACES_FEATURE}
 
           <details>
           <summary>▸ Notes:</summary>
@@ -781,18 +941,20 @@ jobs:
           - Based on LineageOS 23.2 kernel source (Android 13 base)
           - In the latest version of susfs, flashing AK3 with Kernel Flasher may brick your device, try [Horizon Kernel Flasher](https://github.com/libxzr/HorizonKernelFlasher)
           - Flash the AnyKernel3 zip that matches your device model
+          - Droidspaces support is experimental; if the build fails or the device bootloops, rerun with a different slot patch (678, 123, or 345).
 
           </details>
 
           ## Downloads:
           - **pdx234 (Xperia 1 V)**: AnyKernel3-pdx234-*.zip
-          - **pdx237 (Xperia 5 V)**: AnyKernel3-pdx237-*.zip
 
           Modules:
           -> https://github.com/sidex15/ksu_module_susfs
 
           Manager:
           -> ${MANAGER_REPO}
+
+          Droidspaces: Official patches from [Droidspaces-OSS](https://github.com/ravindu644/Droidspaces-OSS/tree/main/Documentation/resources/kernel-patches/GKI)
 
           LZ4 1.10.0: Upgrade from [zzh20188/GKI_KernelSU_SUSFS](https://github.com/zzh20188/GKI_KernelSU_SUSFS)
 
@@ -801,9 +963,9 @@ jobs:
 
           Build compiled with:
           - **KernelSU Variant**: ${VARIANT}
-          - **Devices**: Sony Xperia 1 V (pdx234), Sony Xperia 5 V (pdx237)
+          - **Devices**: Sony Xperia 1 V (pdx234)
           - **Base Kernel**: 5.15
-          - **Android Version**: 16 (LineageOS 23.2 - crDroid 12.7)
+          - **Android Version**: 16 (LineageOS 23.2 - crDroid 12.11)
           - **Clang Version**: ${{ env.AOSP_CLANG_VERSION }}
           - **Release Version**: ${{ github.event.inputs.release_version }}
           - **Build Date**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
@@ -834,4 +996,4 @@ jobs:
         run: |
           echo "Release created successfully!"
           echo "URL: https://github.com/${{ github.repository }}/releases/tag/${{ env.RELEASE_TAG }}"
-          echo "Devices included: pdx234 (Xperia 1 V), pdx237 (Xperia 5 V)"
+          echo "Devices included: pdx234 (Xperia 1 V)"

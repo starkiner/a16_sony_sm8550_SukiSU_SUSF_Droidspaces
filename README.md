@@ -1,9 +1,9 @@
-# LineageOS 23.2 Custom Kernel - SukiSU Ultra for the Sony Xperia 1 V & Sony Xperia 5 V
+# LineageOS 23.2 Custom Kernel - SukiSU Ultra for the Sony Xperia 1 V
 <img src="https://github.com/spacealtctrl/sm8550_SukiSU_SUSFS/blob/main/assets/sonysuki.png" alt="SukiSU Ultra" width="100" height="150"/>
 
 ## Requirements
 - **ROM**: LineageOS 23.2 / crDroid 12.11 (Android 16)
-- **Device**: Sony Xperia 1 V (pdx234) / Sony Xperia 5 V (pdx237)
+- **Device**: Sony Xperia 1 V (pdx234)
 - **Recovery**: [TWRP](https://xdaforums.com/t/recovery-unofficial-updated-teamwin-recovery-project-3-7-1-for-xperia-1v-03-20-2024.4662645/)
 
 ## Features
@@ -14,6 +14,7 @@
 - **BBR TCP**
 - **LZ4KD**
 - **LZ4 1.10.0** - Upgraded
+- **Droidspaces container support** - Experimental, using official Droidspaces GKI patches
 
 ## Installation
 1. Ensure you're running **LineageOS 23.2 / crDroid 12.11**
@@ -35,6 +36,8 @@
 - **SUSFS** - Enable/disable filesystem hiding
 - **KPM** - Enable/disable Kernel Patch Module
 - **ZRAM** - Enable/disable LZ4KD optimizations
+- **Droidspaces** - Experimental container support (`off`, `678`, `123`, `345`; `678` is the recommended slot patch)
+- **Droidspaces NTSync** - Optional NTSync support when Droidspaces is enabled
 
 ## Credits, Acknowledgments & Thanks
 A post from someone called 'DeadEnd91' on XDA which made me decide to take on this project.
@@ -55,6 +58,7 @@ This wouldn't be possible without the amazing work from:
 - **Sony Open Devices Project** - For device support
 - **[sidex15](https://github.com/sidex15)** - SUSFS module development
 - **[libxzr](https://github.com/libxzr)** - Horizon Kernel Flasher
+- **[ravindu644](https://github.com/ravindu644/Droidspaces-OSS)** - Droidspaces and official GKI patches
 - **[osm0sis](https://github.com/osm0sis)** - Original AnyKernel3
 
 ### Community

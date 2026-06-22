@@ -11,7 +11,7 @@ jobs:
     permissions:
       contents: write
     env:
-      DEVICES: pdx234 pdx237
+      DEVICES: pdx234
 
     steps:
       - name: Checkout
@@ -111,7 +111,7 @@ jobs:
           
           # Prepare output directory
           mkdir -p arch/arm64/configs/
-          rm -f arch/arm64/configs/pdx{234,237}_defconfig
+          rm -f arch/arm64/configs/pdx234_defconfig
           
           # Process each device
           for DEVICE in $DEVICES; do
@@ -158,12 +158,11 @@ jobs:
           
           # Overwrite root defconfigs with extracted ones
           cp arch/arm64/configs/pdx234_defconfig ./pdx234_defconfig
-          cp arch/arm64/configs/pdx237_defconfig ./pdx237_defconfig
           
-          git add pdx234_defconfig pdx237_defconfig
+          git add pdx234_defconfig
           
           if ! git diff --cached --quiet; then
-            git commit -m "chore(defconfigs): Update latest defconfigs for pdx234 pdx237"
+            git commit -m "chore(defconfigs): Update latest defconfig for pdx234"
             git push origin HEAD:main
           else
             echo "No changes to defconfigs, nothing to push"
